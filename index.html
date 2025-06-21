@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mare Terra Sales Heatmap & Trend</title>
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-chart-matrix"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: 'Segoe UI', sans-serif; margin: 0; background: #f9f9f9; color: #333; }
+    header {
+      background-color: #004d40;
+      padding: 16px;
+      color: white;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    }
+    .logo {
+      font-size: 22px;
+      font-weight: bold;
+      letter-spacing: 1px;
+    }
+    nav a {
+      color: white;
+      text-decoration: none;
+      margin-left: 20px;
+      font-weight: 500;
+    }
+    .container {
+      padding: 20px;
+    }
+    .filters {
+      margin-bottom: 20px;
+    }
+    .filters select, .filters input[type=checkbox] {
+      padding: 6px;
+      margin-right: 10px;
+    }
+    canvas {
+      background: white;
+      border-radius: 8px;
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
+    }
+    #alerts {
+      margin-top: 20px;
+      background-color: #ffebee;
+      padding: 12px;
+      border-left: 5px solid #d32f2f;
+      color: #d32f2f;
+      font-weight: 500;
+    }
+    #trendContainer {
+      margin-top: 40px;
+    }
+    #loadingSpinner {
+      display: none;
+      margin: 20px auto;
+      border: 8px solid #f3f3f3;
+      border-top: 8px solid #004d40;
+      border-radius: 50%;
+      width: 50px;
+      height: 50px;
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo">Mare Terra</div>
+    <nav>
+      <a href="#">Dashboard</a>
+      <a href="#">Reports</a>
+      <a href="#">Settings</a>
+    </nav>
+  </header>
+
+  <div class="container">
+    <h2>Sales Heatmap Overview</h2>
+
+    <div class="filters">
+      <label>Product Family:
+        <select id="familyFilter"><option value="">All</option></select>
+      </label>
+      <label>Product:
+        <select id="productFilter"><option value="">All</option></select>
+      </label>
+      <label>Restaurant:
+        <select id="restFilter"><option value="">All</option></select>
+      </label>
+      <label>Drop Threshold:
+        <select id="dropThreshold">
+          <option value="30">30%</option>
+          <option value="40">40%</option>
+          <option value="50">50%</option>
+          <option value="60">60%</option>
+        </select>
+      </label>
+      <label>
+        <input type="checkbox" id="autoNotifyToggle"> Enable Sales Rep Notifications
+      </label>
+      <button onclick="fetchData()">Refresh</button>
+    </div>
+
+    <div id="loadingSpinner"></div>
+
+    <canvas id="heatmap" width="1000" height="500"></canvas>
+    <div id="alerts"></div>
+
+    <div id="trendContainer">
+      <h3>Product Trend Chart</h3>
+      <select id="trendProductSelect"></select>
+      <canvas id="trendChart" width="800" height="300"></canvas>
+    </div>
+  </div>
+
+  <script>
+    const csvUrl = 'https://raw.githubusercontent.com/ak-need/sales-data/refs/heads/main/sales.csv';
+    const usersCsvUrl = 'https://raw.githubusercontent.com/ak-need/sales-data/refs/heads/main/users.csv';
+    let rawData = [], grouped = {}, months = [], products = [], restaurants = [], families = [], heatmapChart = null, trendChart = null;
+    let userRoles = {};
+    let currentTheme = 'blue';
+
+    function toggleSpinner(show) {
+      document.getElementById('loadingSpinner').style.display = show ? 'block' : 'none';
+    }
+
+    function fetchData() {
+      toggleSpinner(true);
+      document.getElementById('alerts').innerHTML = '';
+      Papa.parse(usersCsvUrl, {
+        download: true,
+        header: true,
+        complete: users => {
+          userRoles = {};
+          users.data.forEach(u => {
+            userRoles[u['Email']] = u['Role'];
+          });
+          Papa.parse(csvUrl, {
+            download: true,
+            header: true,
+            complete: result => {
+              rawData = result.data.filter(r => r['Product Name'] && r['Restaurant'] && r['Sales Date']);
+              processData();
+              drawHeatmap();
+              drawTrendChart();
+              detectDrops();
+              toggleSpinner(false);
+            }
+          });
+        }
+      });
+    }
+
+    function processData() {
+      grouped = {}; months = []; products = new Set(); restaurants = new Set(); families = new Set();
+
+      rawData.forEach(row => {
+        const date = row['Sales Date'], product = row['Product Name'], rest = row['Restaurant'], family = row['Product Family'], quantity = parseInt(row['Quantity']);
+        if (!date || !product || !rest || !family || isNaN(quantity)) return;
+
+        const month = date.slice(0, 7);
+        if (!months.includes(month)) months.push(month);
+        products.add(product); restaurants.add(rest); families.add(family);
+
+        grouped[product] = grouped[product] || {};
+        grouped[product][rest] = grouped[product][rest] || {};
+        grouped[product][rest][month] = (grouped[product][rest][month] || 0) + quantity;
+      });
+
+      months.sort();
+      populateFilters();
+    }
+
+    function populateFilters() {
+      fillSelect('familyFilter', ['All'].concat(Array.from(families).sort()));
+      fillSelect('productFilter', ['All'].concat(Array.from(products).sort()));
+      fillSelect('restFilter', ['All'].concat(Array.from(restaurants).sort()));
+      fillSelect('trendProductSelect', Array.from(products).sort());
+    }
+
+    function fillSelect(id, options) {
+      const sel = document.getElementById(id);
+      const current = sel.value;
+      sel.innerHTML = options.map(opt => `<option${opt === current ? ' selected' : ''} value="${opt === 'All' ? '' : opt}">${opt}</option>`).join('');
+    }
+
+    function drawHeatmap() {
+  if (heatmapChart) heatmapChart.destroy();
+  const ctx = document.getElementById('heatmap').getContext('2d');
+
+  const famF = document.getElementById('familyFilter').value;
+  const prodF = document.getElementById('productFilter').value;
+  const restF = document.getElementById('restFilter').value;
+  const dataPoints = [], rows = [];
+
+  Array.from(products).filter(prod =>
+    (!prodF || prod === prodF) &&
+    (!famF || rawData.find(r => r['Product Name'] === prod && r['Product Family'] === famF))
+  ).forEach(prod => {
+    Array.from(restaurants).filter(rest => !restF || rest === restF).forEach(rest => {
+      const rowLabel = `${prod} ⇄ ${rest}`;
+      rows.push(rowLabel);
+      months.forEach((month, x) => {
+        const qty = (grouped[prod]?.[rest]?.[month]) || 0;
+        dataPoints.push({ x, y: rows.length - 1, v: qty, product: prod, restaurant: rest, month });
+      });
+    });
+  });
+
+  const maxQ = Math.max(...dataPoints.map(d => d.v), 1);
+
+  heatmapChart = new Chart(ctx, {
+    type: 'matrix',
+    data: {
+      datasets: [{
+        label: 'Monthly Sales',
+        data: dataPoints,
+        width: 30,
+        height: 20,
+        backgroundColor: ctx => {
+          const { v, product, restaurant, month } = ctx.raw;
+          const monthIndex = months.indexOf(month);
+          const prevMonth = months[monthIndex - 1];
+          const prevQty = prevMonth ? (grouped[product]?.[restaurant]?.[prevMonth] || 0) : null;
+
+          if (prevQty === null || prevQty === undefined || prevQty === 0) {
+            return '#eeeeee'; // no previous data — neutral gray
+          }
+
+          const diff = v - prevQty;
+          const pct = Math.abs((diff / prevQty) * 100);
+          const intensity = Math.min(pct / 100, 1); // scale for color strength
+
+          if (diff > 0) {
+            // Green scale for increase
+            return `rgba(0, ${200 + intensity * 55}, 0, ${0.5 + intensity * 0.5})`;
+          } else if (diff < 0) {
+            // Red scale for drop
+            return `rgba(${200 + intensity * 55}, 0, 0, ${0.5 + intensity * 0.5})`;
+          } else {
+            return '#cccccc'; // no change — light gray
+          }
+        }
+      }]
+    },
+    options: {
+      plugins: {
+        tooltip: {
+          callbacks: {
+            title: items => {
+              const item = items[0].raw;
+              return `${item.month} — ${item.product} ⇄ ${item.restaurant}`;
+            },
+            label: item => {
+              const { v, product, restaurant, month } = item.raw;
+              const monthIndex = months.indexOf(month);
+              const prevMonth = months[monthIndex - 1];
+              let prevQty = 0;
+
+              if (prevMonth) {
+                prevQty = grouped[product]?.[restaurant]?.[prevMonth] || 0;
+              }
+
+              let change = '—';
+              if (prevQty > 0) {
+                const diff = v - prevQty;
+                const pct = ((diff / prevQty) * 100).toFixed(1);
+                if (diff < 0) {
+                  change = `📉 Drop: ${Math.abs(pct)}%`;
+                } else if (diff > 0) {
+                  change = `📈 Rise: ${pct}%`;
+                } else {
+                  change = `No change`;
+                }
+              } else if (v > 0) {
+                change = `🆕 New Entry`;
+              }
+
+              return [
+                `Quantity: ${v}`,
+                `Previous: ${prevQty}`,
+                `${change}`
+              ];
+            }
+          }
+        }
+      },
+      scales: {
+        x: { type: 'category', labels: months, position: 'top', title: { display: true, text: 'Month' } },
+        y: { type: 'category', labels: rows, title: { display: true, text: 'Product ⇄ Restaurant' } }
+      }
+        }
+      });
+    }
+
+
+    function drawTrendChart() {
+      if (trendChart) trendChart.destroy();
+      const ctx = document.getElementById('trendChart').getContext('2d');
+      const product = document.getElementById('trendProductSelect').value;
+
+      const monthlyData = months.map(month => {
+        let total = 0;
+        for (let rest in grouped[product]) {
+          total += grouped[product][rest][month] || 0;
+        }
+        return total;
+      });
+
+      const colors = monthlyData.map((val, i) => {
+        if (i === 0) return 'gray';
+        return val < monthlyData[i - 1] ? 'red' : 'green';
+      });
+
+      trendChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: months,
+          datasets: [{
+            label: `${product} Sales`,
+            data: monthlyData,
+            backgroundColor: colors
+          }]
+        },
+        options: {
+          responsive: true,
+          plugins: {
+            legend: { display: false },
+            tooltip: { callbacks: { label: ctx => `Quantity: ${ctx.raw}` } }
+          },
+          scales: {
+            x: { title: { display: true, text: 'Month' } },
+            y: { title: { display: true, text: 'Quantity' }, beginAtZero: true }
+          }
+        }
+      });
+    }
+
+    function detectDrops() {
+      const alerts = [];
+      const threshold = parseInt(document.getElementById('dropThreshold').value) || 30;
+      const autoNotify = document.getElementById('autoNotifyToggle').checked;
+
+      for (let prod in grouped) {
+        for (let rest in grouped[prod]) {
+          const sales = months.map(m => grouped[prod][rest][m] || 0);
+          for (let i = 1; i < sales.length; i++) {
+            const prev = sales[i - 1], curr = sales[i];
+            if (prev > 0 && curr < prev * (1 - threshold / 100)) {
+              const drop = Math.round((prev - curr) / prev * 100);
+              const salesRep = rawData.find(r => r['Product Name'] === prod && r['Restaurant'] === rest)?.['Sales Rep'] || 'Unknown';
+              const email = salesRep ? `${salesRep.toLowerCase()}@mareterra.com` : 'N/A';
+              const note = `⚠️ ${prod} at ${rest} dropped by ${drop}% (${months[i - 1]} → ${months[i]})`;
+              // alerts.push(note);
+              if (autoNotify && userRoles[email] === 'Sales Rep') {
+                alerts.push(`📧 Notification sent to: ${email}`);
+              }
+            }
+          }
+        }
+      }
+      if (alerts.length) {
+        document.getElementById('alerts').innerHTML = alerts.join('<br>');
+      }
+    }
+
+    document.getElementById('trendProductSelect').addEventListener('change', drawTrendChart);
+
+    fetchData();
+  </script>
+</body>
+</html>
