@@ -226,6 +226,7 @@
         width: 30,
         height: 20,
         backgroundColor: ctx => {
+          if (!ctx || !ctx.raw) return '#eeeeee';
           const { v, product, restaurant, month } = ctx.raw;
           const monthIndex = months.indexOf(month);
           const prevMonth = months[monthIndex - 1];
